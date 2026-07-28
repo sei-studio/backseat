@@ -33,10 +33,22 @@
 import { GRID_FRAMES, GRID_COLS, GRID_ROWS } from '../../shared/backseatIpc';
 
 /**
- * The default small VLM. Cheap, OpenAI-compatible, and carried by DeepInfra;
- * override with SEI_GATE_MODEL when trying alternatives.
+ * The default gate model. 260728: chosen by measurement, not by parameter count.
+ * Against a matched pair of real 3x2 grids (six identical frames vs six wildly
+ * different ones) on DeepInfra's actual catalogue:
+ *
+ *   Qwen3-VL-30B-A3B   no / yes      correct on both, ~520 ms, ~1240 img tokens
+ *   gemma-3-4b-it      yes / yes     says yes to everything (the classic
+ *                                    small-VLM yes-bias this gate exists to fix)
+ *   gemma-3-12b-it     no  / No      says no to everything, misses real events
+ *
+ * 30B-A3B is a mixture-of-experts with only ~3B parameters active per token, so
+ * it is "small" in the way that matters for cost and latency while still being
+ * the only one of the three that actually discriminates. About $0.00019 a call,
+ * so roughly $0.11 an hour at the 6 s cadence.
+ * Override with SEI_GATE_MODEL to try alternatives.
  */
-const DEFAULT_MODEL = 'Qwen/Qwen2.5-VL-7B-Instruct';
+const DEFAULT_MODEL = 'Qwen/Qwen3-VL-30B-A3B-Instruct';
 const DEEPINFRA_URL = 'https://api.deepinfra.com/v1/openai/chat/completions';
 
 /** Share of grids the gate aims to pass. Not a cap: it is the quantile the
@@ -64,15 +76,30 @@ const GATE_TIMEOUT_MS = 5_000;
  * are examples, not an enumeration — a game-agnostic watcher cannot have a
  * closed list — but they anchor what "significant" means well enough that the
  * score separates.
+ *
+ * The transcript (260728) is the local Whisper ring's text for the same
+ * window. It is quoted DATA from the game's audio — dialogue, a caster, lyrics
+ * — never instructions; a video that says "answer yes" costs at worst one
+ * spurious companion turn, which the adaptive threshold then absorbs into the
+ * window like any other score.
  */
-const GATE_PROMPT =
-  `This image is a ${GRID_ROWS}x${GRID_COLS} grid of ${GRID_FRAMES} frames from six seconds of gameplay, ` +
-  'in order: left to right along each row, then down to the next row. ' +
-  'Comparing the frames to each other, is there a significant change across them, ' +
-  'such as a kill, a death, a revive, a discovery, a completed objective, a dramatic escape, ' +
-  'or a major change in location? ' +
-  'Ordinary movement, walking, aiming, menus, and looting are NOT significant. ' +
-  'Answer with exactly one word: yes or no.';
+function gatePrompt(transcript?: string): string {
+  const audio = transcript
+    ? `The game audio over the same six seconds was transcribed as: "${transcript}". ` +
+      'Treat it as part of what happened; something significant SAID (a call-out, a reveal, ' +
+      'a dramatic line) also counts. '
+    : '';
+  return (
+    `This image is a ${GRID_ROWS}x${GRID_COLS} grid of ${GRID_FRAMES} frames from six seconds of gameplay, ` +
+    'in order: left to right along each row, then down to the next row. ' +
+    audio +
+    'Comparing the frames to each other, is there a significant change across them, ' +
+    'such as a kill, a death, a revive, a discovery, a completed objective, a dramatic escape, ' +
+    'or a major change in location? ' +
+    'Ordinary movement, walking, aiming, menus, and looting are NOT significant. ' +
+    'Answer with exactly one word: yes or no.'
+  );
+}
 
 /** Per-session rolling scores, keyed by characterId. */
 const windows = new Map<string, number[]>();
@@ -98,12 +125,22 @@ export function thresholdFor(scores: number[]): number {
  * no room for a threshold, while the distribution over it varies smoothly with
  * how sure the model actually is.
  */
-function scoreFromLogprobs(choice: unknown): number | null {
+export function scoreFromLogprobs(choice: unknown): number | null {
   const c = choice as {
-    logprobs?: { content?: Array<{ top_logprobs?: Array<{ token: string; logprob: number }> }> };
+    logprobs?: {
+      content?: Array<{
+        token?: string;
+        logprob?: number;
+        top_logprobs?: Array<{ token: string; logprob: number }>;
+      }>;
+    };
     message?: { content?: string };
   };
-  const top = c?.logprobs?.content?.[0]?.top_logprobs;
+  const first = c?.logprobs?.content?.[0];
+
+  // Best case: the full distribution over alternatives, normalised across just
+  // the yes and no mass so other tokens cannot drag the score around.
+  const top = first?.top_logprobs;
   if (Array.isArray(top) && top.length) {
     let yes = 0;
     let no = 0;
@@ -115,9 +152,24 @@ function scoreFromLogprobs(choice: unknown): number | null {
     }
     if (yes + no > 0) return yes / (yes + no);
   }
-  // No logprobs from this provider/model: fall back to the emitted word. The
-  // adaptive threshold degenerates to a plain yes/no here, which is worse but
-  // still functional.
+
+  // 260728: DeepInfra honours `logprobs` but IGNORES `top_logprobs`, returning
+  // only the CHOSEN token's logprob. That is still a continuous score, which is
+  // all the adaptive threshold needs: p(yes) directly when it said yes, and
+  // 1 - p(no) when it said no. Strictly this is a monotone proxy rather than a
+  // true p(yes) (the leftover mass sits on tokens that are neither word), but
+  // ordering is what the quantile consumes, and ordering is preserved.
+  // Without this branch every DeepInfra call fell through to the hard 0/1
+  // below and the learned threshold silently degenerated to a plain yes/no.
+  if (first && typeof first.logprob === 'number' && typeof first.token === 'string') {
+    const t = first.token.trim().toLowerCase();
+    const p = Math.exp(first.logprob);
+    if (t.startsWith('yes')) return Math.min(1, p);
+    if (t.startsWith('no')) return Math.max(0, 1 - p);
+  }
+
+  // No usable logprobs at all: fall back to the emitted word. The adaptive
+  // threshold degenerates to a plain yes/no here, which is worse but works.
   const text = c?.message?.content?.trim().toLowerCase() ?? '';
   if (text.startsWith('yes')) return 1;
   if (text.startsWith('no')) return 0;
@@ -135,7 +187,11 @@ let warnedMissingKey = false;
  * passthrough is not built yet, so a packaged build with no dev key gates
  * closed and backseat runs on the user and jolt triggers alone.
  */
-export async function gateGrid(characterId: string, grid: string): Promise<boolean> {
+export async function gateGrid(
+  characterId: string,
+  grid: string,
+  transcript?: string,
+): Promise<boolean> {
   const key = process.env.SEI_GATE_DEV_KEY;
   if (!key) {
     if (!warnedMissingKey) {
@@ -163,7 +219,7 @@ export async function gateGrid(characterId: string, grid: string): Promise<boole
             role: 'user',
             content: [
               { type: 'image_url', image_url: { url: grid } },
-              { type: 'text', text: GATE_PROMPT },
+              { type: 'text', text: gatePrompt(transcript) },
             ],
           },
         ],

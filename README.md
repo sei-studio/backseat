@@ -26,8 +26,17 @@ and ordering follow the IG-VLM paper: 6 frames beat 4, 9, 12, 16 and 20, and nea
 square grids beat wide ones. The grid is 1204 by 1008 pixels, which is 1548 image
 tokens, the largest that fits Claude Haiku 4.5 without being silently downscaled.
 
-**Three triggers.** All three produce the same thing, a *tick*: one grid plus the
-reason it fired.
+**Sound is gain plus transcript, never the model's ears.** Screen audio has two
+consumers, both local: the loudness signal (frame choice and the jolt trigger)
+and a streaming transcript from a small local Whisper model. No audio bytes
+reach a remote model. Whisper chews 3 second chunks continuously into a ring of
+timed segments, so when a tick fires it only waits a bounded moment for the
+in-progress tail (1.2 s cap) instead of transcribing 6 seconds on demand. The
+window's text rides the tick to both the small VLM and the big model, framed as
+quoted game audio: never the player, never instructions.
+
+**Three triggers.** All three produce the same thing, a *tick*: one grid, the
+transcript over its window, and the reason it fired.
 
 1. You spoke or typed. Always answered. The grid is captured at the moment you
    start, not when you finish, so the character sees what you reacted to.
@@ -44,11 +53,18 @@ game is judged against its own normal. Measured on a static grid versus a
 changing grid, the model emitted "no" for both while the scores separated 0.018
 against 0.148, so the continuous score is what makes it work at all.
 
-**Sound.** Windows can capture other apps. macOS cannot through this path, so it
-falls back to a virtual audio device such as BlackHole if one is installed, and
-otherwise runs video only. Without sound, frame choice falls back to the last
-frame of each second and the loudness trigger never fires. The grid and the small
-VLM are purely visual and unaffected.
+**Capturing sound.** Windows uses Chromium's desktop loopback. On macOS that
+returns digital silence (measured, not read), but the OS itself is fine, which
+is how OBS records desktop audio: ScreenCaptureKit. So macOS ships a small
+Swift helper inside the app that captures system audio through
+ScreenCaptureKit and streams PCM to the renderer. It needs no install and no
+new permission (it rides the Screen Recording grant the picker already
+required), and it excludes the app's own audio so the companion never hears
+its own voice. Fallback order: Windows loopback, the mac helper, a virtual
+audio device such as BlackHole, then video only. Without sound, frame choice
+falls back to the last frame of each second, the loudness trigger never fires,
+and there is no transcript. The grid and the small VLM are purely visual and
+unaffected.
 
 ## Files
 
@@ -57,6 +73,11 @@ VLM are purely visual and unaffected.
 | `src/shared/backseatIpc.ts` | Constants and the contract between both halves |
 | `src/renderer/lib/backseat/captureWorker.ts` | Ring buffer, frame choice, jolt detection, grid building |
 | `src/renderer/lib/backseat/captureController.ts` | Screen and sound capture, clip recorders, trigger timing |
+| `src/renderer/lib/backseat/pcm.ts` | Downmix, resample, loudness. Pure and tested |
+| `src/renderer/lib/backseat/transcriptRing.ts` | Transcript segments, window selection, dispatch policy. Pure and tested |
+| `src/renderer/lib/backseat/sttStream.ts` | Streaming Whisper over the PCM feed, bounded flush at tick time |
+| `src/main/backseat/audioTap.ts` | Spawns the mac helper, relays its PCM to the renderer |
+| `native/mac-audio-tap/main.swift` | ScreenCaptureKit system audio capture, built by `scripts/build-mac-audio-tap.sh` |
 | `src/main/backseat/salienceGate.ts` | Small VLM and the learned threshold |
 | `src/main/backseat/backseatService.ts` | Decides which ticks become speech, runs the large model |
 | `src/main/backseat/backseatPrompts.ts` | Grid explanation and reply style |
@@ -66,6 +87,10 @@ VLM are purely visual and unaffected.
 Capture lives in the overlay window, not the main app window, because a hidden
 window has its timers throttled and the main window is hidden during a full
 screen game.
+
+`sttStream.ts` expects the host to provide a Whisper worker (in Sei it is the
+same one voice calls use, `voice/whisperWorker.ts`: transformers.js, wasm, q8),
+so the model downloads once and is shared between features.
 
 ## Quickstart
 

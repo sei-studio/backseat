@@ -39,7 +39,9 @@
 ]
 
 % ---- capture spine -------------------------------------------------------
-\node[wide] (src) {screen and sound};
+\node[wide] (src)
+  {screen and sound\\[1pt]
+   {\scriptsize\itshape sound stays local: loudness + a streaming Whisper transcript}};
 % Annotations live INSIDE their boxes. Anything placed beside a box collides
 % with the orthogonal routing sooner or later: the first version had the grid's
 % east-going branch drawn straight through its own caption.
@@ -67,7 +69,7 @@
 
 % ---- merge into a tick ---------------------------------------------------
 \node[key, below=22mm of vlm] (tick)
-  {tick\\one grid plus the reason it fired\\[1pt]
+  {tick\\one grid, the transcript, and the reason it fired\\[1pt]
    {\scriptsize\itshape dropped, never queued, if already talking}};
 
 % `|-' is vertical first, then horizontal, so the outer branches drop straight
