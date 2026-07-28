@@ -1,0 +1,88 @@
+% Backseat architecture diagram.
+%
+% Build:  tectonic docs/architecture.tex
+%         pdftoppm -png -r 200 docs/architecture.pdf docs/architecture
+%
+% Routing rule: every edge is strictly orthogonal, and no two edges touch or
+% cross. That is why the fan out leaves the grid box from its WEST and EAST
+% edges rather than from a shared horizontal bus under it: a bus would put a
+% four way junction under the centre of the diagram. Same trick in reverse for
+% the merge, where the outer branches enter the tick box on its west and east
+% edges while the centre branch comes straight down into its north edge.
+\documentclass[border=12pt]{standalone}
+\usepackage{tikz}
+\usepackage[T1]{fontenc}
+\usepackage{helvet}
+\renewcommand{\familydefault}{\sfdefault}
+\usetikzlibrary{arrows.meta, positioning, shapes.geometric}
+
+\begin{document}
+\begin{tikzpicture}[
+  font=\small,
+  node distance=11mm,
+  box/.style={
+    draw=black!55,
+    fill=black!3,
+    rounded corners=2.5pt,
+    line width=0.5pt,
+    align=center,
+    inner sep=6pt,
+    minimum height=11mm,
+    text width=42mm,
+  },
+  wide/.style={box, text width=58mm},
+  trig/.style={box, fill=blue!6, draw=blue!45, text width=34mm},
+  key/.style={box, fill=orange!8, draw=orange!55, text width=42mm},
+  result/.style={box, fill=green!8, draw=green!45!black!60, text width=52mm},
+  flow/.style={draw=black!65, line width=0.7pt, -{Stealth[length=2.4mm]}},
+  lbl/.style={font=\scriptsize\itshape, text=black!55},
+]
+
+% ---- capture spine -------------------------------------------------------
+\node[wide] (src) {screen and sound};
+% Annotations live INSIDE their boxes. Anything placed beside a box collides
+% with the orthogonal routing sooner or later: the first version had the grid's
+% east-going branch drawn straight through its own caption.
+\node[wide, below=of src] (ring)
+  {ring buffer: 9 seconds\\one frame per second, chosen by loudest sound\\[1pt]
+   {\scriptsize\itshape 60 fps in, 1 kept per second}};
+\node[wide, below=of ring] (grid)
+  {image grid\\6 frames stitched into 1 picture, 3 rows by 2\\[1pt]
+   {\scriptsize\itshape 1204 x 1008, 1548 image tokens}};
+
+\draw[flow] (src) -- (ring);
+\draw[flow] (ring) -- (grid);
+
+% ---- the three triggers --------------------------------------------------
+% Placed relative to the grid so the outer two sit clear of the centre column.
+\node[trig, below=22mm of grid] (vlm) {small VLM\\asked every 6 seconds};
+\node[trig, left=26mm of vlm]   (you) {you speak\\or type};
+\node[trig, right=26mm of vlm]  (jolt) {loudness or\\colour jump\\(no model)};
+
+% Fan out. `-|' is horizontal first, then vertical, so both outer edges leave
+% the grid sideways and turn down without ever meeting the centre line.
+\draw[flow] (grid.west) -| (you.north);
+\draw[flow] (grid.south) -- (vlm.north);
+\draw[flow] (grid.east) -| (jolt.north);
+
+% ---- merge into a tick ---------------------------------------------------
+\node[key, below=22mm of vlm] (tick)
+  {tick\\one grid plus the reason it fired\\[1pt]
+   {\scriptsize\itshape dropped, never queued, if already talking}};
+
+% `|-' is vertical first, then horizontal, so the outer branches drop straight
+% down and come in on the tick box's sides, below where the centre edge lands.
+\draw[flow] (you.south)  |- (tick.west);
+\draw[flow] (vlm.south)  -- (tick.north);
+\draw[flow] (jolt.south) |- (tick.east);
+
+% ---- the expensive half --------------------------------------------------
+\node[wide, below=of tick] (llm) {large model};
+\node[result, below=of llm] (reply)
+  {one or two short lines,\\sometimes a saved clip};
+
+\draw[flow] (tick) -- (llm);
+\draw[flow] (llm) -- (reply);
+
+\end{tikzpicture}
+\end{document}

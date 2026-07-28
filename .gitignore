@@ -4,3 +4,6 @@ dist/
 .env.*
 *.log
 .DS_Store
+
+# LaTeX build output (the PNG is committed, the PDF is not)
+docs/*.pdf

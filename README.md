@@ -11,23 +11,9 @@ a chat brain, a character persona, and a memory store.
 
 ## Architecture
 
-```math
-\begin{array}{ccc}
- & \boxed{\text{screen and sound}} & \\
- & \downarrow & \\
- & \boxed{\text{ring buffer: 9 s, one frame per second}} & \\
- & \downarrow & \\
- & \boxed{\text{image grid: 6 frames into 1 picture}} & \\
-\downarrow & \downarrow & \downarrow \\
-\boxed{\text{you speak or type}} & \boxed{\text{small VLM, every 6 s}} & \boxed{\text{loudness or colour jump}} \\
-\downarrow & \downarrow & \downarrow \\
- & \boxed{\text{tick}} & \\
- & \downarrow & \\
- & \boxed{\text{large model}} & \\
- & \downarrow & \\
- & \boxed{\text{short reply, sometimes a saved clip}} &
-\end{array}
-```
+![Backseat architecture](docs/architecture.png)
+
+<sub>Diagram source: [`docs/architecture.tex`](docs/architecture.tex) (TikZ). Rebuild with `tectonic docs/architecture.tex && pdftoppm -png -r 200 -singlefile docs/architecture.pdf docs/architecture`.</sub>
 
 **Ring buffer.** Capture runs at 60 fps but only one frame per second is kept,
 chosen by which frame had the loudest sound. It is a running argmax, so one image
