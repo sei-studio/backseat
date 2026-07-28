@@ -9,42 +9,6 @@ Extracted from [Sei](https://github.com/sei-studio/sei). This is the real
 implementation, but it is not a standalone app: it expects an Electron host with
 a chat brain, a character persona, and a memory store.
 
-## MATHTEST
-
-A) inline baseline: $x^2 + y^2$
-
-B) block baseline:
-
-```math
-x^2 + y^2 = z^2
-```
-
-C) plain array, no boxed:
-
-```math
-\begin{array}{ccc}
-a & b & c \\
-\downarrow & \downarrow & \downarrow \\
-d & e & f
-\end{array}
-```
-
-D) array with boxed:
-
-```math
-\begin{array}{c}
-\boxed{a} \\
-\downarrow \\
-\boxed{b}
-\end{array}
-```
-
-E) boxed with text:
-
-```math
-\boxed{\text{hello world}}
-```
-
 ## Architecture
 
 ```math
