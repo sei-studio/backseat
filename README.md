@@ -18,18 +18,14 @@ a chat brain, a character persona, and a memory store.
  & \boxed{\text{ring buffer: 9 s, one frame per second}} & \\
  & \downarrow & \\
  & \boxed{\text{image grid: 6 frames into 1 picture}} & \\
- & \downarrow & \\
-\hline
 \downarrow & \downarrow & \downarrow \\
 \boxed{\text{you speak or type}} & \boxed{\text{small VLM, every 6 s}} & \boxed{\text{loudness or colour jump}} \\
 \downarrow & \downarrow & \downarrow \\
-\hline
- & \downarrow & \\
  & \boxed{\text{tick}} & \\
  & \downarrow & \\
  & \boxed{\text{large model}} & \\
  & \downarrow & \\
- & \boxed{\text{short reply, sometimes a saved clip}} & \\
+ & \boxed{\text{short reply, sometimes a saved clip}} &
 \end{array}
 ```
 
