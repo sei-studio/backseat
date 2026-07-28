@@ -11,7 +11,7 @@ a chat brain, a character persona, and a memory store.
 
 ## Architecture
 
-$$
+```math
 \begin{array}{ccc}
  & \boxed{\text{screen and sound}} & \\
  & \downarrow & \\
@@ -21,8 +21,7 @@ $$
  & \downarrow & \\
 \hline
 \downarrow & \downarrow & \downarrow \\
-\boxed{\text{you speak}} & \boxed{\text{small VLM}} & \boxed{\text{loudness or colour jump}} \\
-\boxed{\text{or type}} & \boxed{\text{every 6 s}} & \boxed{\text{no model}} \\
+\boxed{\text{you speak or type}} & \boxed{\text{small VLM, every 6 s}} & \boxed{\text{loudness or colour jump}} \\
 \downarrow & \downarrow & \downarrow \\
 \hline
  & \downarrow & \\
@@ -32,7 +31,7 @@ $$
  & \downarrow & \\
  & \boxed{\text{short reply, sometimes a saved clip}} & \\
 \end{array}
-$$
+```
 
 **Ring buffer.** Capture runs at 60 fps but only one frame per second is kept,
 chosen by which frame had the loudest sound. It is a running argmax, so one image
