@@ -4,7 +4,7 @@ A companion that watches a screen you share and talks about it live: reacting to
 what just happened and, true to the name, pushing for what it wants to see next.
 
 Extracted from [Sei](https://github.com/sei-studio/sei), where it ships as of
-v0.5.4. This is the real implementation, mirrored file for file at the same
+v0.6.2. This is the real implementation, mirrored file for file at the same
 paths, not a rewrite. It is not a standalone app: it expects an Electron host
 with a chat brain, a character persona, a memory store, and a voice call.
 
@@ -33,7 +33,7 @@ and reads as confusion rather than lateness.
 | --- | --- | --- |
 | `user` | The player spoke or typed | Always answered, ignores the speak gap |
 | `start` | 1.8 s after the share opens | Once per session |
-| `jolt` | A local loudness or colour discontinuity | No model in the loop |
+| `jolt` | A loudness spike, or content that changed and then settled | No model in the loop |
 | `idle` | A scheduled timer | The steady state |
 
 `idle` is a **shifted exponential** over [12 s, 60 s], mean ~28 s. The
@@ -52,6 +52,34 @@ picker is still dismissing over the thing being shared.
 `MIN_SPEAK_GAP_MS` (8 s) drops `jolt` and `idle`, never `user`. This is the only
 silence in the system, and it is deliberately mechanical: **a rule that never
 looks at a moment cannot misjudge one.**
+
+### React to the new thing, not to the change
+
+A colour jolt fires at the discontinuity, and that timing turned out to be
+exactly wrong for a content switch. On an Instagram Reels session the companion
+was reliably one reel behind, every time: the swipe raised the tick, the grid
+composited at that instant was five cells of the old reel and one sliver of the
+new, and it reacted to what it could actually see, which was the clip the player
+had just left.
+
+So a colour discontinuity no longer raises a tick. It arms a **dwell**
+(`switchDwell.ts`), and so does a change in the window title, since a tab switch
+or a new video is the same event seen through a different sensor. The wake fires
+only once the new content has held for `SWITCH_DWELL_MS` with no further change,
+and every further change restarts the clock. Two things fall out, both wanted:
+the grid at fire time spans exactly the dwell, so every cell shows the new thing;
+and a fast scroll through five reels produces nothing at all until the player
+settles on one.
+
+The dwell is 6 s because that is the grid's own span. Shorter and the old content
+still dominates the grid, which is the bug. Longer and the reaction is stale.
+**Gain jolts stay immediate**: a loudness spike is a moment inside a scene that is
+still going, and reacting at the moment is the point of it.
+
+A dwell that expires inside `MIN_SPEAK_GAP_MS` is deferred past the gap rather
+than sent and dropped, because a swipe tends to follow a line about the previous
+clip by a second or two, and the settled reel would otherwise go unremarked until
+the next idle look.
 
 ## The image grid
 
@@ -131,6 +159,11 @@ and a shorter period double-counts it (measured: 5 s re-fired, 3 s re-fired).
 
 `JOLT_COLOR_MAD` is the one-line sensitivity dial.
 
+Since the dwell landed, the colour arm no longer raises a look of its own. It
+produces a change *signal* and the dwell decides when that becomes a look, which
+does not make the refractory clock redundant: it is still what keeps one scene
+change from registering as three.
+
 ## Sound stays local
 
 Screen audio has exactly **two consumers, both local**: the gain arm above, and
@@ -162,19 +195,69 @@ Source order: Windows loopback → the mac tap → a virtual output device such 
 BlackHole → video only. Without sound the gain arm never fires and there is no
 transcript; the grid and the colour arm are unaffected.
 
+## The microphone hears the speakers
+
+Not a screen-watching problem on the face of it. It is in this repo because
+backseat is what makes it solvable.
+
+On a call played out loud the microphone hears three voices: the player, the
+companion's own text-to-speech, and whatever the shared screen is playing.
+Chromium's echo canceller subtracts only the second, because it references the
+app's own output, and it degrades exactly where it matters most, since maximum
+speaker volume clips the echo and the canceller models a linear path. Nothing
+anywhere subtracts the third: another application's audio has no reference signal
+in the browser at all, which is why the answer the large call apps give is "wear
+headphones".
+
+Measured over two Instagram sessions on speakers at full volume, both failure
+modes fired repeatedly. Reel dialogue was transcribed and dispatched as the
+player's own words, so the companion was told the player had just said "Get ready
+with us, but Stas is picking my outfit", and every strange conclusion it drew
+from that was correct reasoning over counterfeit input. Meanwhile its own leaked
+speech kept confirming the word-gated barge-in, so it cut itself off mid-line.
+
+Backseat can do what the call apps cannot, because it already captures the system
+audio they have no access to. `echoGate.ts` tests a microphone utterance against
+two references before it is allowed to be the player: the **text** (the
+companion's own audible lines, known verbatim, plus the screen transcript ring)
+and the **envelope** (the utterance's loudness contour, cross-correlated against
+the tap's over the speaker-path lag).
+
+One asymmetry shapes every threshold: wrongly dropping the player's real speech
+is worse than missing an echo, because a missed echo is the status quo. Text
+matches condemn. The envelope alone condemns only when it is strong and there is
+no transcript to contradict it, which is the music case, where Whisper returns
+nothing to compare. Everything in between is `ambiguous` and waits one bounded
+screen-STT flush for the words to decide, which costs about a second of latency
+on exactly the utterances where the player is talking over the reel, and nothing
+on the rest.
+
+The correlation bar is calibrated rather than picked. On synthetic independent
+talk-cadence envelopes, max-over-lags Pearson reads a spurious p90/p99 of
+0.84/0.93 at 1 s and 0.64/0.82 at 2 s, while a true lagged copy with microphone
+jitter and noise sits above 0.86 at any length. The two distributions only
+separate from about 2.5 s up, so a shorter utterance is marked invalid and
+decided on text alone.
+
+The prompt-side backstop for the same failure is the identity rule above: a
+person on screen is never the player. It is a backstop and not the fix, because
+a model reasoning over counterfeit input is not making a mistake.
+
 ## What is being watched
 
 Every tick carries `shareLabel`: the shared window's current title, or on a
-whole-screen share the frontmost window's, re-read every 5 s because a tab
-switch changes the screen under a fixed source id.
+whole-screen share the frontmost window's, re-read every 2.5 s because a tab
+switch changes the screen under a fixed source id. It was 5 s until a label
+change also became a switch signal, at which point the poll set the accuracy of
+the dwell's 6 s promise.
 
 **What it replaced was working, and was removed anyway.** An earlier version ran
 a full OCR pass over every other frame: a bundled Swift `VNRecognizeTextRequest`
 helper on macOS, tesseract.js elsewhere. It was good: whole phrases at ~72 ms,
 94 of 94 frames, 23 words a frame against Tesseract's 6. It answered the wrong
 question. A HUD full of numbers does not distinguish a game from a stream of
-that game, and four words of window title do, for one window enumeration every
-5 s instead of the most expensive local work in the pipeline. Do not re-add OCR
+that game, and four words of window title do, for one zero-thumbnail window
+enumeration instead of the most expensive local work in the pipeline. Do not re-add OCR
 without a specific thing it is for that the title cannot carry.
 
 ## What it says
@@ -192,16 +275,84 @@ own much higher one, so the option is gone.
 were: "you just got caught", "you just used a skill", "health is dropping". All
 true, all describing a screen the player is looking at. The contract now spends
 the line on what the player does *not* have (an opinion, a question, a want),
-and the thing that moved it was four BAD/GOOD contrast pairs, not more
-instruction: 0/10 lines asked anything before, 10/10 after, median 35 words down
-to 20.
+and what moved it was four BAD/GOOD contrast pairs rather than more instruction:
+0/10 lines asked anything before, 10/10 after, median 35 words down to 20.
 
-**When a rule is not holding, name the sentence, not the rule.** The general ban
-on narration did not stop the companion opening with "you went from X to Y" on a
-short-video feed, and stating in prose what a feed is did not either. Two
-BAD/GOOD pairs quoting that exact sentence did: 3/6 to 0/6 on the feed, and
-ablated on unrelated Valorant footage over the same eleven looks, 5/11 openings
-of that shape down to 1/11 with median length 27 words down to 21.
+**Name the sentence, not the rule.** The general ban on narration did not stop
+the companion opening with "you went from X to Y" on a short-video feed, and
+stating in prose what a feed is did not either. Naming that exact sentence as the
+shape to avoid did: 3/6 to 0/6 on the feed, and ablated on unrelated Valorant
+footage over the same eleven looks, 5/11 openings of that shape down to 1/11,
+median length 27 words down to 21.
+
+**The example lines are gone, and that is the more useful half of it.** The
+BAD/GOOD pairs worked on the axis they were aimed at and cost something nobody
+was measuring. Across the sessions that followed, the companion's whole register
+converged on the GOOD lines' voice: the same few stock quips, session after
+session, on unrelated footage. Modeled dialogue teaches a voice while it teaches
+a shape, and the voice belongs to the persona, not to the contract. So the pairs
+were deleted and every ban now names the offending shape in prose, which was the
+active ingredient anyway. A test asserts no `BAD:` or `GOOD:` block comes back.
+If narration measurably returns, name the shape more precisely rather than
+restoring example lines.
+
+**And do not quote the phrase you are banning.** A session against a static email
+inbox produced six turns in which five of six lines opened on the same
+reappraisal beat, the same take re-litigated as a fresh discovery each turn.
+Replayed offline, every arm at 16 runs by 6 turns, 156 lines each: the persona's
+own sample lines were acquitted, since stripping all of them moved nothing, and
+an arm that banned the offending word by quoting it made that word 16 points
+*more* frequent. What shipped instead rewrites the repetition rule, at the same
+length, to ban repetition of shape rather than of wording: same opener as your
+last line, pet words your recent lines already used, re-presenting what you both
+know as a discovery, re-opening a question they answered. Measured across the
+same arms, the tic went 47% to 37% of lines and loop sessions 54% to 38%. That
+is the prompt-space ceiling here. The residue is the model's register prior under
+"speak every turn" and "opinion, not narration" on a screen that is not moving,
+and the next step for it is mechanical, in the `stripDashes` family.
+
+**Three rules about what it is actually looking at,** each of which started as a
+live failure. A *feed* is clips picked by an app and made by unrelated strangers,
+where no clip is a reply to the one before it and the feed itself is never the
+subject: the companion had been calling it "your feed" and "that guy's feed" and
+reading consecutive clips as related. The *player is not on screen*, because no
+camera points at them and the share carries only their screen, so a person in a
+video is never them and a voice in the audio is never their voice. And *watching
+is not making*: text overlaid on a clip, captions appearing word by word, cuts,
+repeated takes of one shot, are what finished video looks like from the inside,
+not evidence that the player is editing one. What the player says they are doing
+outranks the screen, permanently.
+
+**A memory written from a guess becomes the next turn's fact.** On a reels
+session the companion decided the caption overlays meant the player was editing
+in Premiere, filed it with `remember()` on nearly every jolt turn, and read its
+own guess back the next turn as established: 30 entries in 14 minutes, and three
+explicit corrections from the player could not break it, because twenty memory
+lines outweigh one line of history. Memory rides the cached prefix, so every
+write also churned it and `cacheRead` sat at 0 for the entire session.
+
+The *watching is not making* rule above is the prompt half. The mechanical half
+is that a `remember()` on a screen-driven tick is honored at most once per 180 s,
+while one on a `user` tick is always honored: dropping the memories prompted by
+something the player actually said is how a correction gets forgotten.
+
+**A `remember()` turn can speak its own scratchpad.** On these surfaces the text
+output *is* the spoken line, so there is nowhere legitimate to think out loud.
+That contract holds on tool-free turns and breaks on the turns that file a
+memory, where the model enters working mode and the text block follows it into
+note register. Captured live, spoken aloud and persisted as chat: "character
+note: sei's curious, wants me to narrate", then two turns later "remember sei's
+into watching other people play". The tool input was correct both times. Only the
+prose leaked.
+
+`noteLeak.ts` drops such parts at every spoken choke point, in two deliberately
+asymmetric tiers. "character note:" and "note to self" openers drop
+unconditionally, because they are never a thing one person says to another. A
+"remember ..." opener drops only when a `remember()` call actually rode the same
+turn and the next word is not addressed to the player, so "remember when we..."
+and "remember, you..." survive. Same family as `stripDashes`: the tool
+description asks for the right thing, is ignored, and the fix is mechanical and
+after the fact.
 
 **Em dashes are stripped in code, not asked away.** "Do not use em dashes" sat
 in the contract for a day and the model wrote one in eight of ten lines.
@@ -230,6 +381,14 @@ directional, not proven. An explicit "tools do not gate speech" paragraph in the
 contract was tried and did not help (43 against 41), so this is not fixable by
 asking. **Suspect it first whenever a surface goes quiet.**
 
+**A new turn's speech supersedes the old turn's queue.** Looks land 12 to 60 s
+apart while spoken playback of a multi-part reply can run longer, so a new turn's
+lines queued behind the previous turn's and the voice drifted a whole turn behind
+the screen even when the ticks did not. Every turn's parts now carry one tag, and
+the audio queue drops any queued clip whose tag is not the newest. The clip at
+the playhead always finishes, which is a sentence boundary because the parts are
+sentence-sized.
+
 ## Cost
 
 Every tick carries a fresh 1548-token image at a 12–60 s cadence, so the cache
@@ -238,7 +397,9 @@ the final history message, not on the image message (which is unique forever and
 can never be read back), and the history window is **anchored rather than slid**,
 so appending a line does not change `message[0]` and invalidate the whole prefix.
 Confirmed live: `cacheRead` steady at ~9k from the second tick, `cacheWrite` near
-zero.
+zero. The prefix also carries the memory block, which is what makes the
+`remember()` throttle a cost fix as much as a behaviour one: unthrottled, a write
+on nearly every turn churns the prefix and `cacheRead` never leaves zero.
 
 One tool array is used for every tick kind. Ticks land seconds apart, well inside
 the cache TTL, so per-kind arrays would invalidate the prefix almost every turn
@@ -264,8 +425,8 @@ retained window is the 9 s ring alone.
 
 ## What was removed, and why
 
-Three components were deleted rather than repaired. Each is worth stating,
-because a diff cannot explain why working code left.
+Four things were deleted rather than repaired. Each is worth stating, because a
+diff cannot explain why working code left.
 
 - **A small VLM salience gate**, asked every 6 s whether anything significant
   had happened, with a learned per-session threshold. Replaced by the idle
@@ -283,6 +444,10 @@ because a diff cannot explain why working code left.
   fan-out. Sharing is now a **call control**, the way Discord does it: share
   button, source picker, the preview takes over the call window and the avatars
   shrink to a strip.
+- **Four BAD/GOOD example pairs in the contract.** They fixed the narration they
+  were aimed at, by the numbers, and taught the companion a register that was
+  not its own while doing it. Covered under *What it says*, because the lesson
+  generalises past this surface.
 
 ## Integrating it
 
@@ -294,7 +459,10 @@ audio tap. `src/shared/backseatIpc.ts` is the boundary and documents every
 channel.
 
 1. Copy `src/` and point the imports at your own chat brain, character store and
-   memory store. `backseatService.ts` is the only file that touches them.
+   memory store. `backseatService.ts` is where almost all of that coupling
+   lives; the rest is host furniture that a compiler will find for you, since
+   these files are Sei's own and reach into its translation helper, its model
+   selection and its config store.
 2. Register the IPC channels listed at the bottom of `src/shared/backseatIpc.ts`.
 3. Add the Chromium switches for system audio in your main process:
 
@@ -310,8 +478,12 @@ channel.
    universal binary into `resources/audio-tap/`) and hook it on predev/predist.
 6. Provide a Whisper worker. In Sei it is the same one voice calls use
    (transformers.js, wasm, q8), so the model downloads once and is shared.
+7. If the host runs a voice call that can play through speakers, wire the echo
+   gate. The capture handle exposes `echoProbe(t0, t1)` and `echoFlush()`; the
+   microphone side calls `micEchoCheck` before a transcript is dispatched as the
+   player or commits a barge-in.
 
-Two host-side rules are not enforceable from inside these files and will bite:
+Three host-side rules are not enforceable from inside these files and will bite:
 
 - **There must be one conversation, not two.** If the host also runs a voice
   turn loop, anything that gives a companion a turn has to check whether that
@@ -328,6 +500,10 @@ Two host-side rules are not enforceable from inside these files and will bite:
   memory shipped, was documented, and never once reached the model for two days
   in exactly that state, invisible because a null previous grid is a legal state
   on the first tick of every session.
+- **The model has to be able to see.** Every tick is an image call, so a
+  text-only model cannot run this surface at all. Gate it at the host's entry
+  points and again in the service, and let the unknown case through: a wrong
+  refusal hides the feature silently, a wrong allow fails visibly.
 
 ## Verifying it
 
@@ -350,7 +526,10 @@ its stub prefix is ~1.1k tokens and Haiku will not cache below 2048, so cache
 hits have to be read off a live session's log.
 
 Unit tests run with `vitest`. The pure kernels (`pcm.ts`, `signals.ts`,
-`transcriptRing.ts`, and the grid geometry) are where the coverage is.
+`transcriptRing.ts`, `switchDwell.ts`, `echoGate.ts`, `noteLeak.ts`, and the grid
+geometry) are where the coverage is, along with the contract lines that exist
+because a live session went wrong, which `backseatPrompts.test.ts` pins verbatim
+so a rewording cannot quietly drop one.
 
 ## Files
 
@@ -360,13 +539,16 @@ Unit tests run with `vitest`. The pure kernels (`pcm.ts`, `signals.ts`,
 | `src/renderer/src/lib/backseat/captureWorker.ts` | Frame ring, grid compositing, duplicate collapse, jolt detection |
 | `src/renderer/src/lib/backseat/captureController.ts` | Screen and sound capture, clip recorders, wake timing |
 | `src/renderer/src/lib/backseat/signals.ts` | Gain and colour kernels. Pure and tested |
+| `src/renderer/src/lib/backseat/switchDwell.ts` | The restartable clock behind the switch wake. Pure and tested |
 | `src/renderer/src/lib/backseat/pcm.ts` | Downmix, resample, loudness. Pure and tested |
 | `src/renderer/src/lib/backseat/transcriptRing.ts` | Transcript segments and window selection. Pure and tested |
 | `src/renderer/src/lib/backseat/sttStream.ts` | Streaming Whisper over the PCM feed, bounded flush at tick time |
+| `src/renderer/src/lib/voice/echoGate.ts` | Is this microphone utterance actually the speakers? Pure and tested |
 | `src/renderer/src/lib/stores/useBackseatStore.ts` | Owns the capture session for the app, and the pending-share handshake |
 | `src/renderer/src/components/backseat/` | Source picker and the clip card |
 | `src/main/backseat/backseatService.ts` | Session state, tick arbitration, the companion turn |
 | `src/main/backseat/backseatPrompts.ts` | The session contract, the per-tick note, the tools |
+| `src/main/chat/noteLeak.ts` | Drops a leaked scratchpad note before it is spoken. Pure and tested |
 | `src/main/backseat/shareLabel.ts` | What the shared surface is called right now |
 | `src/main/backseat/audioTap.ts` | Spawns the mac helper, relays its PCM to the renderer |
 | `src/main/backseat/backseatLog.ts` | Per-session diagnostics, to terminal and to the host's log surface |
